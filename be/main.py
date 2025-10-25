@@ -1,4 +1,4 @@
-from fastapi import FastAPI, File, UploadFile, HTTPException
+from fastapi import FastAPI, File, UploadFile, HTTPException, Form
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 import cv2
@@ -27,7 +27,7 @@ app.add_middleware(
 
 # Load YOLOv11 model
 try:
-    model = YOLO('yolo11n.pt')  # Using nano version for faster inference
+    model = YOLO('yolo11x.pt')  # Using nano version for faster inference
     logger.info("YOLOv11 model loaded successfully")
 except Exception as e:
     logger.error(f"Error loading YOLOv11 model: {e}")
@@ -97,8 +97,8 @@ def format_detections(results) -> List[Dict[str, Any]]:
 @app.post("/api/detect")
 async def detect_objects(
     file: UploadFile = File(...),
-    confidence_threshold: float = 0.5,
-    return_image: bool = True
+    confidence_threshold: float = Form(0.5),
+    target_class: str = Form(None)
 ):
     """
     Detect objects in uploaded image using YOLOv11
@@ -107,6 +107,7 @@ async def detect_objects(
         file: Image file (jpg, png, etc.)
         confidence_threshold: Minimum confidence for detections (default: 0.5)
         return_image: Whether to return annotated image (default: True)
+        target_class: Specific class to filter for (optional)
     
     Returns:
         JSON response with detections and optionally annotated image
@@ -127,17 +128,45 @@ async def detect_objects(
         results = model(image, conf=confidence_threshold)
         
         # Format detections
-        detections = format_detections(results)
+        all_detections = format_detections(results)
+        
+               # Filter detections if target_class is specified
+        if target_class:
+            # Add debugging to see what classes are detected
+            logger.info(f"🔍 All detected classes: {[d['class'] for d in all_detections]}")
+            
+            # Normalize target class for comparison (lowercase, handle spaces/underscores)
+            target_normalized = target_class.lower().replace(" ", "_").replace("-", "_")
+            # logger.info(f"🎯 Looking for normalized target: '{target_normalized}'")
+            
+            filtered_detections = []
+            for detection in all_detections:
+                detected_class = detection["class"].lower().replace(" ", "_").replace("-", "_")
+                # logger.info(f"🔍 Comparing '{detected_class}' with '{target_normalized}'")
+                
+                # Check for exact match or partial match
+                if (detected_class == target_normalized or 
+                    target_normalized in detected_class or 
+                    detected_class in target_normalized):
+                    logger.info(f"✅ Match found: {detection['class']}")
+                    filtered_detections.append(detection)
+            
+            detections = filtered_detections
+            # logger.info(f"🎯 Filtered for '{target_class}': {len(detections)} matches found")
+        else:
+            detections = all_detections
         
         response_data = {
             "success": True,
             "detections": detections,
             "total_objects": len(detections),
-            "confidence_threshold": confidence_threshold
+            "confidence_threshold": confidence_threshold,
+            "target_class": target_class,
+            "filtered": target_class is not None
         }
 
-        logger.info(f"📤 Sending response: {response_data}")
-        logger.info(f"Detection complete: {len(detections)} objects found")
+        # logger.info(f"📤 Sending response: {response_data}")
+        # logger.info(f"Detection complete: {len(detections)} objects found")
         return JSONResponse(content=response_data)
         
     except Exception as e:

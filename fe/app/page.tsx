@@ -2,18 +2,17 @@
 
 import { useState, useRef, useEffect, useCallback } from "react";
 import Webcam from "react-webcam";
-
-interface Detection {
-  class: string;
-  confidence: number;
-}
-
-interface DetectionResponse {
-  success: boolean;
-  detections: Detection[];
-  total_objects: number;
-  confidence_threshold: number;
-}
+import {
+  Detection,
+  GameState,
+  GameHandlers,
+  startNewRound as serviceStartNewRound,
+  completeItem as serviceCompleteItem,
+  resetGame as serviceResetGame,
+  handleTimerTick,
+  captureAndAnalyze as serviceCaptureAndAnalyze,
+  formatTime,
+} from "./services";
 
 export default function Home() {
   const [isStreaming, setIsStreaming] = useState(false);
@@ -21,13 +20,65 @@ export default function Home() {
   const [detections, setDetections] = useState<Detection[]>([]);
   const [isAnalyzing, setIsAnalyzing] = useState(false);
   const [lastAnalysis, setLastAnalysis] = useState<string | null>(null);
+  const [showWrongItem, setShowWrongItem] = useState(false);
   const webcamRef = useRef<Webcam>(null);
+
+  const allItems = ["cell phone", "clock", "cup", "bottle", "person"];
+
+  const [gameState, setGameState] = useState<GameState>({
+    currentItem: "",
+    timeLeft: 300,
+    score: 0,
+    completedItems: [],
+    gameActive: false,
+    round: 1,
+  });
+
+  const [availableItems, setAvailableItems] = useState<string[]>(allItems);
 
   const videoConstraints = {
     width: 1280,
     height: 720,
     facingMode: "user",
   };
+
+  // Game handlers object
+  const gameHandlers: GameHandlers = {
+    setGameState,
+    setAvailableItems,
+    setDetections,
+    setError,
+    setLastAnalysis,
+    setIsAnalyzing,
+    setShowWrongItem,
+  };
+
+  // Game functions using services
+  const startNewRound = useCallback(() => {
+    serviceStartNewRound(availableItems, gameHandlers);
+  }, [availableItems]);
+
+  const completeItem = useCallback(
+    (foundItem: string) => {
+      serviceCompleteItem(foundItem, gameState, gameHandlers);
+    },
+    [gameState]
+  );
+
+  const resetGame = () => {
+    serviceResetGame(allItems, gameHandlers);
+  };
+
+  // Timer countdown
+  useEffect(() => {
+    if (!gameState.gameActive) return;
+
+    const timer = setInterval(() => {
+      setGameState((prev) => handleTimerTick(prev, gameHandlers));
+    }, 1000);
+
+    return () => clearInterval(timer);
+  }, [gameState.gameActive]);
 
   const onUserMedia = () => {
     console.log("✅ Camera started successfully");
@@ -43,82 +94,29 @@ export default function Home() {
 
   // Function to capture and send frame to backend
   const captureAndAnalyze = useCallback(async () => {
-    if (!webcamRef.current || !isStreaming || isAnalyzing) return;
+    await serviceCaptureAndAnalyze(
+      webcamRef,
+      isStreaming,
+      isAnalyzing,
+      gameState,
+      gameHandlers
+    );
+  }, [
+    isStreaming,
+    isAnalyzing,
+    gameState.gameActive,
+    gameState.currentItem,
+    completeItem,
+  ]);
 
-    try {
-      setIsAnalyzing(true);
-
-      // Capture frame from webcam
-      const imageSrc = webcamRef.current.getScreenshot();
-      if (!imageSrc) {
-        console.warn("⚠️ No image captured");
-        return;
-      }
-
-      console.log("📸 Frame captured, sending to backend...");
-
-      // Convert base64 to blob
-      const response = await fetch(imageSrc);
-      const blob = await response.blob();
-      console.log("🔄 Blob created:", blob.type, blob.size, "bytes");
-
-      // Create FormData to send to backend
-      const formData = new FormData();
-      formData.append("file", blob, "frame.jpg");
-      formData.append("confidence_threshold", "0.5");
-
-      console.log("📤 Sending request to backend...");
-
-      // Send to backend
-      const backendResponse = await fetch("http://localhost:8000/api/detect", {
-        method: "POST",
-        body: formData,
-      });
-
-      if (!backendResponse.ok) {
-        // Try to get error details from backend
-        const errorText = await backendResponse.text();
-        console.error("❌ Backend error details:", errorText);
-        throw new Error(
-          `Backend error: ${backendResponse.status} - ${errorText}`
-        );
-      }
-
-      const result = await backendResponse.json();
-      console.log("🎯 Backend response data:", result);
-
-      // Update interface based on new backend response format
-      if (result.success && result.detections) {
-        setDetections(result.detections);
-        setLastAnalysis(new Date().toLocaleTimeString());
-        setError(null);
-        console.log("✅ Detections updated:", result.detections);
-      } else {
-        console.warn("⚠️ No detections in response");
-        setDetections([]);
-      }
-    } catch (err) {
-      console.error("❌ Full error details:", err);
-      setError(
-        `Analysis failed: ${
-          err instanceof Error ? err.message : "Unknown error"
-        }`
-      );
-    } finally {
-      setIsAnalyzing(false);
+  // Manual capture function for button click
+  const handleManualCapture = () => {
+    if (!gameState.gameActive) {
+      console.warn("⚠️ Game not active");
+      return;
     }
-  }, [isStreaming, isAnalyzing]);
-
-  // Auto-analyze frames every 2 seconds
-  useEffect(() => {
-    if (!isStreaming) return;
-
-    const interval = setInterval(() => {
-      captureAndAnalyze();
-    }, 2000);
-
-    return () => clearInterval(interval);
-  }, [isStreaming, captureAndAnalyze]);
+    captureAndAnalyze();
+  };
 
   // Auto-start camera when component mounts
   useEffect(() => {
@@ -127,9 +125,13 @@ export default function Home() {
   }, []);
 
   return (
-    <div className="min-h-screen relative overflow-hidden">
+    <div
+      key="halloween-game-container"
+      className="min-h-screen relative overflow-hidden"
+    >
       {/* Background */}
       <div
+        key="game-background"
         className="absolute inset-0 bg-cover bg-center bg-no-repeat"
         style={{
           backgroundImage:
@@ -139,10 +141,16 @@ export default function Home() {
       />
 
       {/* Overlay gradient */}
-      <div className="absolute inset-0 bg-gradient-to-br from-orange-900/30 via-purple-900/40 to-black/70" />
+      <div
+        key="game-overlay"
+        className="absolute inset-0 bg-gradient-to-br from-orange-900/30 via-purple-900/40 to-black/70"
+      />
 
       {/* Floating Halloween elements */}
-      <div className="absolute inset-0 overflow-hidden pointer-events-none">
+      <div
+        key="floating-elements"
+        className="absolute inset-0 overflow-hidden pointer-events-none"
+      >
         <div className="absolute top-20 left-10 text-orange-500/20 text-4xl animate-bounce">
           🎃
         </div>
@@ -170,16 +178,51 @@ export default function Home() {
       </div>
 
       {/* Main content */}
-      <div className="relative z-10 flex flex-col items-center justify-center min-h-screen p-4">
-        <div className="max-w-6xl w-full">
+      <div
+        key="main-content"
+        className="relative z-10 flex flex-col items-center justify-center min-h-screen p-4"
+      >
+        <div key="game-container" className="max-w-6xl w-full">
           {/* Header */}
           <div className="text-center mb-8">
             <h1 className="text-4xl md:text-6xl font-bold text-orange-400 mb-4 font-serif">
-              🎃 Halloween AI Detection 🎃
+              🎃 Spooky Bring Me Game 🎃
             </h1>
             <p className="text-lg text-orange-200 opacity-90">
-              Spooky live object detection with YOLOv11
+              Find the items before time runs out!
             </p>
+          </div>
+
+          {/* Game Stats */}
+          <div className="grid grid-cols-1 md:grid-cols-4 gap-4 mb-6">
+            <div className="bg-orange-500/20 backdrop-blur-sm rounded-lg p-4 text-center">
+              <div className="text-2xl font-bold text-orange-400">
+                {gameState.score}
+              </div>
+              <div className="text-orange-200 text-sm">Score</div>
+            </div>
+            <div className="bg-purple-500/20 backdrop-blur-sm rounded-lg p-4 text-center">
+              <div className="text-2xl font-bold text-purple-400">
+                {gameState.round}
+              </div>
+              <div className="text-purple-200 text-sm">Round</div>
+            </div>
+            <div className="bg-green-500/20 backdrop-blur-sm rounded-lg p-4 text-center">
+              <div className="text-2xl font-bold text-green-400">
+                {gameState.completedItems.length}
+              </div>
+              <div className="text-green-200 text-sm">Found</div>
+            </div>
+            <div className="bg-blue-500/20 backdrop-blur-sm rounded-lg p-4 text-center">
+              <div
+                className={`text-2xl font-bold ${
+                  gameState.timeLeft < 60 ? "text-red-400" : "text-blue-400"
+                }`}
+              >
+                {formatTime(gameState.timeLeft)}
+              </div>
+              <div className="text-blue-200 text-sm">Time Left</div>
+            </div>
           </div>
 
           <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
@@ -187,6 +230,22 @@ export default function Home() {
             <div className="lg:col-span-2">
               <div className="relative bg-black/50 backdrop-blur-sm rounded-2xl border-2 border-orange-500/30 shadow-2xl overflow-hidden">
                 <div className="p-6">
+                  {/* Current Item Challenge */}
+                  {gameState.gameActive && (
+                    <div className="mb-4 text-center bg-gradient-to-r from-orange-500/20 to-purple-500/20 rounded-lg p-4">
+                      <h3 className="text-xl font-bold text-orange-300 mb-2">
+                        🎯 Find This Item:
+                      </h3>
+                      <div className="text-3xl font-bold text-white capitalize mb-2">
+                        {gameState.currentItem.replace("_", " ")}
+                      </div>
+                      <div className="text-sm text-orange-200 opacity-80">
+                        Point your camera at the item and click "Capture &
+                        Check"
+                      </div>
+                    </div>
+                  )}
+
                   {/* Camera Feed */}
                   <div className="relative aspect-video bg-gray-900 rounded-xl overflow-hidden mb-4">
                     {isStreaming ? (
@@ -220,88 +279,139 @@ export default function Home() {
                         Analyzing...
                       </div>
                     )}
+
+                    {/* Item Found Overlay */}
+                    {detections.length > 0 && (
+                      <div className="absolute inset-0 bg-green-500/20 backdrop-blur-sm flex items-center justify-center">
+                        <div className="text-center text-green-300">
+                          <div className="text-6xl mb-4">✅</div>
+                          <div className="text-2xl font-bold">Item Found!</div>
+                          <div className="text-lg">Starting next round...</div>
+                        </div>
+                      </div>
+                    )}
+
+                    {/* Wrong Item Overlay */}
+                    {showWrongItem && (
+                      <div className="absolute inset-0 bg-red-500/20 backdrop-blur-sm flex items-center justify-center">
+                        <div className="text-center text-red-300">
+                          <div className="text-6xl mb-4">❌</div>
+                          <div className="text-2xl font-bold">Wrong Item!</div>
+                          <div className="text-lg capitalize">
+                            Looking for "{gameState.currentItem}"
+                          </div>
+                        </div>
+                      </div>
+                    )}
                   </div>
 
-                  {/* Camera Status */}
-                  {isStreaming && !error && (
-                    <div className="text-center text-green-400 text-sm flex items-center justify-center gap-4">
-                      <div className="flex items-center gap-2">
-                        <span className="inline-block w-2 h-2 bg-green-500 rounded-full animate-pulse"></span>
-                        Camera Active
-                      </div>
-                      {lastAnalysis && (
-                        <div className="flex items-center gap-2 text-blue-400">
-                          <span>🔍</span>
-                          Last scan: {lastAnalysis}
+                  {/* Game Controls */}
+                  <div className="flex gap-4 justify-center flex-wrap">
+                    {!gameState.gameActive && availableItems.length > 0 && (
+                      <button
+                        onClick={startNewRound}
+                        disabled={!isStreaming}
+                        className="bg-green-500 hover:bg-green-600 disabled:bg-gray-600 disabled:opacity-50 text-white px-6 py-3 rounded-lg font-semibold transition-colors flex items-center justify-center gap-2"
+                      >
+                        <span>🎮</span>
+                        {gameState.completedItems.length === 0
+                          ? "Start Game"
+                          : "Next Round"}
+                      </button>
+                    )}
+
+                    {/* Capture Button - only show when game is active */}
+                    {gameState.gameActive && (
+                      <button
+                        onClick={handleManualCapture}
+                        disabled={!isStreaming || isAnalyzing}
+                        className="bg-blue-500 hover:bg-blue-600 disabled:bg-gray-600 disabled:opacity-50 text-white px-6 py-3 rounded-lg font-semibold transition-colors flex items-center justify-center gap-2"
+                      >
+                        <span>📸</span>
+                        {isAnalyzing ? "Analyzing..." : "Capture & Check"}
+                      </button>
+                    )}
+
+                    {availableItems.length === 0 && (
+                      <div className="text-center">
+                        <div className="text-4xl mb-4">🏆</div>
+                        <div className="text-2xl font-bold text-green-400 mb-2">
+                          Game Completed!
                         </div>
-                      )}
-                    </div>
-                  )}
+                        <div className="text-lg text-green-300 mb-4">
+                          Final Score: {gameState.score}
+                        </div>
+                        <button
+                          onClick={resetGame}
+                          className="bg-orange-500 hover:bg-orange-600 text-white px-6 py-3 rounded-lg font-semibold transition-colors"
+                        >
+                          🎮 Play Again
+                        </button>
+                      </div>
+                    )}
+
+                    <button
+                      onClick={resetGame}
+                      className="bg-red-500 hover:bg-red-600 text-white px-6 py-3 rounded-lg font-semibold transition-colors flex items-center justify-center gap-2"
+                    >
+                      <span>🔄</span>
+                      Reset Game
+                    </button>
+                  </div>
                 </div>
               </div>
             </div>
 
-            {/* Detection Results Panel */}
+            {/* Game Progress Panel */}
             <div className="lg:col-span-1">
               <div className="bg-black/50 backdrop-blur-sm rounded-2xl border-2 border-purple-500/30 shadow-2xl overflow-hidden h-full">
                 <div className="p-6">
                   <h2 className="text-2xl font-bold text-purple-400 mb-4 flex items-center gap-2">
-                    🎯 Detections
+                    🎯 Progress
                   </h2>
 
-                  <div className="space-y-3 max-h-96 overflow-y-auto">
-                    {detections.length > 0 ? (
-                      detections.map((detection, index) => (
+                  {/* Completed Items */}
+                  <div className="mb-6">
+                    <h3 className="text-lg font-semibold text-green-400 mb-2">
+                      ✅ Completed ({gameState.completedItems.length}/
+                      {allItems.length})
+                    </h3>
+                    <div className="space-y-2">
+                      {gameState.completedItems.map((item, index) => (
                         <div
                           key={index}
-                          className="bg-purple-900/30 border border-purple-500/20 rounded-lg p-3"
+                          className="bg-green-900/30 border border-green-500/20 rounded-lg p-2 text-green-200 capitalize"
                         >
-                          <div className="flex items-center justify-between mb-2">
-                            <span className="font-semibold text-purple-200 capitalize">
-                              {detection.class
-                                ? detection.class.replace("_", " ")
-                                : "Unknown"}
-                            </span>
-                            <span className="text-green-400 text-sm font-mono">
-                              {detection.confidence
-                                ? Math.round(detection.confidence * 100)
-                                : 0}
-                              %
-                            </span>
-                          </div>
-                          <div className="text-xs text-purple-300 opacity-70">
-                            Class: {detection.class || "Unknown"}
-                          </div>
+                          {item.replace("_", " ")}
                         </div>
-                      ))
-                    ) : (
-                      <div className="text-center text-gray-400 py-8">
-                        <div className="text-4xl mb-2">👁️</div>
-                        <p>No objects detected yet</p>
-                        <p className="text-sm opacity-70 mt-1">
-                          Move in front of the camera
-                        </p>
-                      </div>
-                    )}
+                      ))}
+                    </div>
                   </div>
-                  {/* Manual Analyze Button */}
-                  <button
-                    onClick={captureAndAnalyze}
-                    disabled={!isStreaming || isAnalyzing}
-                    className="w-full mt-4 bg-purple-500 hover:bg-purple-600 disabled:bg-gray-600 disabled:opacity-50 text-white px-4 py-2 rounded-lg font-semibold transition-colors flex items-center justify-center gap-2"
-                  >
-                    {isAnalyzing ? (
-                      <>
-                        <div className="w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin"></div>
-                        Analyzing...
-                      </>
-                    ) : (
-                      <>
-                        <span>🔍</span>
-                        Analyze Now
-                      </>
-                    )}
-                  </button>
+
+                  {/* Remaining Items */}
+                  <div>
+                    <h3 className="text-lg font-semibold text-orange-400 mb-2">
+                      🎯 Remaining ({availableItems.length})
+                    </h3>
+                    <div className="space-y-2">
+                      {availableItems.map((item, index) => (
+                        <div
+                          key={index}
+                          className={`border rounded-lg p-2 capitalize ${
+                            item === gameState.currentItem &&
+                            gameState.gameActive
+                              ? "bg-orange-900/50 border-orange-500/50 text-orange-200 animate-pulse"
+                              : "bg-gray-900/30 border-gray-500/20 text-gray-300"
+                          }`}
+                        >
+                          {item === gameState.currentItem &&
+                            gameState.gameActive &&
+                            "👉 "}
+                          {item.replace("_", " ")}
+                        </div>
+                      ))}
+                    </div>
+                  </div>
                 </div>
               </div>
             </div>
