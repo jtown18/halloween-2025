@@ -22,9 +22,8 @@ export default function Home() {
   const [lastAnalysis, setLastAnalysis] = useState<string | null>(null);
   const [showWrongItem, setShowWrongItem] = useState(false);
   const webcamRef = useRef<Webcam>(null);
-
+  const audioRef = useRef<HTMLAudioElement>(null);
   const allItems = ["cell phone", "clock", "cup", "bottle", "person"];
-
   const [gameState, setGameState] = useState<GameState>({
     currentItem: "",
     timeLeft: 300,
@@ -33,9 +32,7 @@ export default function Home() {
     gameActive: false,
     round: 1,
   });
-
   const [availableItems, setAvailableItems] = useState<string[]>(allItems);
-
   const videoConstraints = {
     width: 1280,
     height: 720,
@@ -68,6 +65,43 @@ export default function Home() {
   const resetGame = () => {
     serviceResetGame(allItems, gameHandlers);
   };
+
+  useEffect(() => {
+    const audio = new Audio("/2.mp3");
+    audio.loop = true;
+    audio.volume = 0.3;
+
+    // Set audio attributes for better auto-play compatibility
+    audio.preload = "auto";
+    audio.muted = false;
+
+    const playAudio = async () => {
+      try {
+        await audio.play();
+        console.log("🎵 Background music started automatically");
+      } catch (error) {
+        console.log("🔇 Auto-play blocked, waiting for user interaction");
+
+        // Start music on first user interaction
+        const startOnInteraction = () => {
+          audio.play().catch(console.error);
+          document.removeEventListener("click", startOnInteraction);
+          document.removeEventListener("touchstart", startOnInteraction);
+          document.removeEventListener("keydown", startOnInteraction);
+        };
+
+        document.addEventListener("click", startOnInteraction);
+        document.addEventListener("touchstart", startOnInteraction);
+        document.addEventListener("keydown", startOnInteraction);
+      }
+    };
+
+    playAudio();
+
+    return () => {
+      audio.pause();
+    };
+  }, []);
 
   // Timer countdown
   useEffect(() => {
@@ -430,9 +464,7 @@ export default function Home() {
 
           {/* Footer */}
           <div className="text-center mt-8 text-orange-300/70">
-            <p className="text-sm">
-              🕷️ Halloween AI Detection • Powered by YOLOv11 🕷️
-            </p>
+            <p className="text-sm">🕷️ AI Detection • Powered by YOLOv11 🕷️</p>
           </div>
         </div>
       </div>
