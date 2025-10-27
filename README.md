@@ -8,6 +8,7 @@ Players are challenged to find specific objects using their webcam feed with AI-
 Frontend: Next.js with TypeScript </br>
 Backend: Python with YOLOv11 (pre-trained COCO dataset)</br>
 
-#Gameplay 
+# Gameplay 
+
 Find specified objects using your webcam</br>
 Features: Real-time object detection, scoring system, jumpscare completion
